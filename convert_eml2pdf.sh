@@ -30,7 +30,7 @@ check_and_install() {
 
 # ----------- Check for required tools ------------
 check_and_install ripmime pandoc wkhtmltopdf
-# munpack is optional, handled gracefully below
+# munpack is optional
 if ! command -v munpack >/dev/null 2>&1; then
     echo "Note: 'munpack' not found. Will continue with 'ripmime' only."
 fi
@@ -50,11 +50,24 @@ mkdir -p "$OUTPUT_DIR/attachments"
 mkdir -p "$OUTPUT_DIR/pdfs"
 
 # ----------- Process each .eml file ------------
-for eml_file in "$INPUT_DIR"/*.eml; do
-    [[ -e "$eml_file" ]] || { echo "No .eml files found in $INPUT_DIR"; exit 0; }
+shopt -s nullglob
+eml_files=("$INPUT_DIR"/*.eml)
 
+if [ ${#eml_files[@]} -eq 0 ]; then
+    echo "No .eml files found in $INPUT_DIR"
+    exit 0
+fi
+
+for eml_file in "${eml_files[@]}"; do
     base_name=$(basename "$eml_file" .eml)
-    echo "Processing: $base_name.eml"
+    # Create a filesystem-safe name for the PDF
+    safe_name=$(echo "$base_name" | tr -cd '[:alnum:]._-' | cut -c1-80)
+    [[ -z "$safe_name" ]] && safe_name="email_$RANDOM"
+
+    echo
+    echo "=============================="
+    echo "📧 Processing: $base_name.eml"
+    echo "=============================="
 
     tmp_dir=$(mktemp -d)
 
@@ -71,8 +84,8 @@ for eml_file in "$INPUT_DIR"/*.eml; do
     fi
 
     if [[ "$ATTACH_OK" == true && $(ls -A "$tmp_dir" 2>/dev/null) ]]; then
-        mkdir -p "$OUTPUT_DIR/attachments/$base_name"
-        mv "$tmp_dir"/* "$OUTPUT_DIR/attachments/$base_name"/ 2>/dev/null || true
+        mkdir -p "$OUTPUT_DIR/attachments/$safe_name"
+        mv "$tmp_dir"/* "$OUTPUT_DIR/attachments/$safe_name"/ 2>/dev/null || true
         echo "  📎 Attachments extracted."
     else
         echo "  ⚠️  No attachments found or extraction failed."
@@ -89,13 +102,13 @@ for eml_file in "$INPUT_DIR"/*.eml; do
     [[ -z "$SUBJECT" ]] && SUBJECT="(no subject)"
     [[ -z "$DATE" ]] && DATE="(no date)"
 
-    # --- Extract email body to HTML ---
+    # --- Extract body ---
     BODY_FILE="$tmp_dir/body.html"
     if ! pandoc "$eml_file" -t html -o "$BODY_FILE" >/dev/null 2>&1; then
         echo "<pre>$(cat "$eml_file")</pre>" > "$BODY_FILE"
     fi
 
-    # --- Build full HTML with headers ---
+    # --- Build full HTML ---
     FINAL_HTML="$tmp_dir/final.html"
     cat > "$FINAL_HTML" <<EOF
 <!DOCTYPE html>
@@ -125,10 +138,12 @@ $(cat "$BODY_FILE")
 EOF
 
     # --- Convert to PDF ---
-    PDF_FILE="$OUTPUT_DIR/pdfs/$base_name.pdf"
-    wkhtmltopdf "$FINAL_HTML" "$PDF_FILE" >/dev/null 2>&1
-
-    echo "  ✅ Saved PDF: $PDF_FILE"
+    PDF_FILE="$OUTPUT_DIR/pdfs/${safe_name}.pdf"
+    if wkhtmltopdf "$FINAL_HTML" "$PDF_FILE" >/dev/null 2>&1; then
+        echo "  ✅ Saved PDF: $PDF_FILE"
+    else
+        echo "  ❌ PDF conversion failed for: $base_name"
+    fi
 
     rm -rf "$tmp_dir"
 done
